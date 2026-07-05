@@ -6,16 +6,18 @@ import plotly.express as px
 from collections import Counter
 import re
 import numpy as np
+from Bio import Entrez, SeqIO
+import requests
+import json
+
+# Set NCBI email (required)
+Entrez.email = "yyen90211@gmail.com"
 
 st.set_page_config(
-    page_title="Bioverse 2.0",
+    page_title="Bioverse 2.0 - DNA to Protein Explorer",
     page_icon="🧬",
     layout="wide"
 )
-
-# Title
-st.title("🧬 Bioverse 2.0")
-st.subheader("DNA to Protein Explorer")
 
 # Codon table
 codon_table = {
@@ -64,8 +66,117 @@ def translate_dna(dna):
         amino_acids.append(codon_table.get(codon, '?'))
     return codons, amino_acids
 
+def fetch_from_ncbi(accession):
+    """Fetch DNA sequence from NCBI using accession number"""
+    try:
+        handle = Entrez.efetch(db="nucleotide", id=accession, rettype="fasta", retmode="text")
+        record = SeqIO.read(handle, "fasta")
+        handle.close()
+        return str(record.seq), record.description
+    except Exception as e:
+        return None, str(e)
+
+def get_gene_info(accession):
+    """Fetch gene information from NCBI"""
+    try:
+        handle = Entrez.esummary(db="nucleotide", id=accession, retmode="json")
+        data = handle.read()
+        handle.close()
+        return json.loads(data)
+    except Exception as e:
+        return None
+
+def ai_analyze_protein(amino_acids):
+    """Simple AI analysis using rules"""
+    if not amino_acids:
+        return {}
+    
+    # Count properties
+    hydrophobic = ['A','V','L','I','F','W','M','P']
+    hydrophilic = ['R','N','D','E','Q','K','H']
+    charged = ['R','K','D','E','H']
+    polar = ['S','T','Y','C','N','Q']
+    
+    counts = Counter(amino_acids)
+    total = len(amino_acids)
+    
+    analysis = {
+        'total_aa': total,
+        'unique_aa': len(set(amino_acids)),
+        'hydrophobic': sum(counts.get(aa, 0) for aa in hydrophobic),
+        'hydrophilic': sum(counts.get(aa, 0) for aa in hydrophilic),
+        'charged': sum(counts.get(aa, 0) for aa in charged),
+        'polar': sum(counts.get(aa, 0) for aa in polar),
+        'most_common': counts.most_common(3),
+        'stop_codons': amino_acids.count('*')
+    }
+    
+    # Generate insights
+    insights = []
+    if analysis['hydrophobic'] / total > 0.5:
+        insights.append("🧬 This protein is hydrophobic - likely membrane-bound")
+    if analysis['charged'] / total > 0.3:
+        insights.append("⚡ High charge content - may interact with DNA/RNA")
+    if analysis['polar'] / total > 0.4:
+        insights.append("💧 Polar-rich protein - likely soluble in water")
+    if analysis['unique_aa'] > 15:
+        insights.append("🌈 High amino acid diversity - complex protein structure")
+    if analysis['stop_codons'] > 0:
+        insights.append("⏹️ Contains stop codons - may be incomplete sequence")
+    
+    analysis['insights'] = insights
+    return analysis
+
+# Custom CSS
+st.markdown("""
+<style>
+    .stApp { background: linear-gradient(135deg, #0a0f0a 0%, #1a2a1a 50%, #0a1a0a 100%); }
+    .main-header { text-align: center; padding: 2rem 0; }
+    .main-header h1 { font-size: 4rem; font-weight: 800; background: linear-gradient(90deg, #4ade80, #22c55e, #16a34a); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
+    .main-header p { color: #9ca3af; font-size: 1.2rem; }
+    .stat-box { background: rgba(34, 197, 94, 0.1); border: 1px solid rgba(34, 197, 94, 0.2); border-radius: 10px; padding: 15px; text-align: center; }
+    .stat-box .number { font-size: 2rem; font-weight: bold; color: #4ade80; }
+    .stat-box .label { color: #9ca3af; font-size: 0.9rem; }
+    .insight-box { background: rgba(34, 197, 94, 0.05); border-left: 3px solid #4ade80; padding: 10px 15px; margin: 5px 0; border-radius: 5px; }
+</style>
+""", unsafe_allow_html=True)
+
+# Header
+st.markdown("""
+<div class="main-header">
+    <h1>🧬 Bioverse 2.0</h1>
+    <p>DNA to Protein Explorer with NCBI Integration & AI Analysis</p>
+    <div style="display: flex; justify-content: center; gap: 1rem; margin-top: 1rem;">
+        <span style="background: rgba(34,197,94,0.2); padding: 5px 15px; border-radius: 20px; color: #4ade80; font-size: 0.9rem;">🧬 CGPA: 3.73</span>
+        <span style="background: rgba(168,85,247,0.2); padding: 5px 15px; border-radius: 20px; color: #a855f7; font-size: 0.9rem;">⚡ Biotech Graduate</span>
+        <span style="background: rgba(59,130,246,0.2); padding: 5px 15px; border-radius: 20px; color: #3b82f6; font-size: 0.9rem;">🧪 NCBI + AI</span>
+    </div>
+</div>
+""", unsafe_allow_html=True)
+
 # Sidebar
 with st.sidebar:
+    st.markdown("### 🔍 NCBI Accession Search")
+    accession_input = st.text_input(
+        "Enter Accession Number",
+        placeholder="e.g., NM_000518, NP_000509, XM_005249",
+        help="NCBI accession numbers for DNA sequences"
+    )
+    
+    if st.button("🔍 Fetch from NCBI", use_container_width=True):
+        if accession_input:
+            with st.spinner("Fetching from NCBI..."):
+                sequence, description = fetch_from_ncbi(accession_input.strip())
+                if sequence:
+                    st.session_state.dna_input = sequence
+                    st.session_state.ncbi_description = description
+                    st.session_state.accession = accession_input
+                    st.success(f"✅ Fetched: {accession_input}")
+                    st.rerun()
+                else:
+                    st.error(f"❌ Error: {description}")
+    
+    st.markdown("---")
     st.markdown("### 🧪 Quick Presets")
     examples = ['ATGGCGTAA', 'ATGGCCATTGTAATGGGCCGCTAA', 'ATGAAGTTTGGCACTTAA']
     for seq in examples:
@@ -79,6 +190,11 @@ with st.sidebar:
     **Bioverse 2.0**
     DNA to Protein Explorer
     
+    - 🧬 DNA Translation
+    - 🔍 NCBI Integration
+    - 🤖 AI Analysis
+    - 🌈 3D Visualization
+    
     CGPA: 3.73
     Biotech Graduate
     """)
@@ -89,14 +205,33 @@ col_left, col_right = st.columns([1, 1], gap="large")
 with col_left:
     st.markdown("### 📝 DNA Sequence Input")
     
+    # Show NCBI info if available
+    if 'accession' in st.session_state:
+        st.success(f"📌 Accession: {st.session_state.accession}")
+        if 'ncbi_description' in st.session_state:
+            st.caption(st.session_state.ncbi_description[:100] + "...")
+    
     dna_input = st.text_area(
         "Enter DNA sequence",
         value=st.session_state.get('dna_input', 'ATGGCGTAA'),
-        height=100,
+        height=120,
         key="dna_input"
     )
     
-    translate_clicked = st.button("🧬 Translate", use_container_width=True)
+    col_btn1, col_btn2, col_btn3 = st.columns([2, 1, 1])
+    with col_btn1:
+        translate_clicked = st.button("🧬 Translate & Analyze", use_container_width=True)
+    with col_btn2:
+        if st.button("Clear", use_container_width=True):
+            st.session_state.dna_input = ""
+            if 'accession' in st.session_state:
+                del st.session_state.accession
+                del st.session_state.ncbi_description
+            st.rerun()
+    with col_btn3:
+        if st.button("Example", use_container_width=True):
+            st.session_state.dna_input = "ATGGCGTAA"
+            st.rerun()
     
     if dna_input:
         valid = bool(re.match(r'^[ATCGatcg\s]+$', dna_input))
@@ -112,6 +247,9 @@ with col_left:
         if len(clean_dna) >= 3 and re.match(r'^[ATCG]+$', clean_dna):
             codons, amino_acids = translate_dna(clean_dna)
             
+            # AI Analysis
+            analysis = ai_analyze_protein(amino_acids)
+            
             st.markdown("### 🔬 Translation Results")
             
             # Display amino acids
@@ -119,6 +257,7 @@ with col_left:
             st.code(result, language="text")
             
             st.session_state.amino_acids = amino_acids
+            st.session_state.analysis = analysis
 
 with col_right:
     st.markdown("### 🌈 3D Protein Structure")
@@ -183,6 +322,13 @@ with col_right:
             col2.metric("Unique AA", len(set(amino_acids)))
             col3.metric("Stop Codons", amino_acids.count('*'))
             
+            # AI Insights
+            if 'analysis' in st.session_state:
+                analysis = st.session_state.analysis
+                st.markdown("### 🤖 AI Insights")
+                for insight in analysis.get('insights', []):
+                    st.markdown(f'<div class="insight-box">{insight}</div>', unsafe_allow_html=True)
+            
             # Composition
             counts = Counter(amino_acids)
             df = pd.DataFrame({
@@ -200,7 +346,7 @@ with col_right:
             )
             st.plotly_chart(fig2, use_container_width=True)
     else:
-        st.info("🧬 Enter a DNA sequence and click 'Translate' to see the 3D structure")
+        st.info("🧬 Enter a DNA sequence and click 'Translate & Analyze' to see the 3D structure")
 
 # Codon Table
 st.markdown("---")
