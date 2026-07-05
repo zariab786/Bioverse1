@@ -69,12 +69,38 @@ def translate_dna(dna):
 def fetch_from_ncbi(accession):
     """Fetch DNA sequence from NCBI using accession number"""
     try:
+        # Try as nucleotide
         handle = Entrez.efetch(db="nucleotide", id=accession, rettype="fasta", retmode="text")
         record = SeqIO.read(handle, "fasta")
         handle.close()
-        return str(record.seq), record.description
-    except Exception as e:
-        return None, str(e)
+        return str(record.seq), record.description, "nucleotide"
+    except:
+        try:
+            # Try as protein (UniProt format)
+            url = f"https://www.uniprot.org/uniprot/{accession}.fasta"
+            response = requests.get(url)
+            if response.status_code == 200:
+                # Parse FASTA
+                lines = response.text.strip().split('\n')
+                seq = ''.join(lines[1:])
+                desc = lines[0] if lines else "Protein sequence"
+                return seq, desc, "protein"
+        except:
+            pass
+        return None, "Invalid accession number. Try NM_000518 or P42212", None
+
+def fetch_nucleotide_from_protein(protein_id):
+    """Try to find nucleotide sequence for a protein"""
+    try:
+        # Search for nucleotide sequences matching this protein
+        handle = Entrez.esearch(db="nucleotide", term=f"{protein_id}[Accession] AND biomol_mrna[PROP]", retmax=5)
+        record = Entrez.read(handle)
+        handle.close()
+        if record["IdList"]:
+            return record["IdList"][0]
+    except:
+        pass
+    return None
 
 def get_gene_info(accession):
     """Fetch gene information from NCBI"""
@@ -91,11 +117,12 @@ def ai_analyze_protein(amino_acids):
     if not amino_acids:
         return {}
     
-    # Count properties
     hydrophobic = ['A','V','L','I','F','W','M','P']
     hydrophilic = ['R','N','D','E','Q','K','H']
     charged = ['R','K','D','E','H']
     polar = ['S','T','Y','C','N','Q']
+    small = ['A','G','S','T','P']
+    aromatic = ['F','W','Y']
     
     counts = Counter(amino_acids)
     total = len(amino_acids)
@@ -107,6 +134,8 @@ def ai_analyze_protein(amino_acids):
         'hydrophilic': sum(counts.get(aa, 0) for aa in hydrophilic),
         'charged': sum(counts.get(aa, 0) for aa in charged),
         'polar': sum(counts.get(aa, 0) for aa in polar),
+        'small': sum(counts.get(aa, 0) for aa in small),
+        'aromatic': sum(counts.get(aa, 0) for aa in aromatic),
         'most_common': counts.most_common(3),
         'stop_codons': amino_acids.count('*')
     }
@@ -114,15 +143,23 @@ def ai_analyze_protein(amino_acids):
     # Generate insights
     insights = []
     if analysis['hydrophobic'] / total > 0.5:
-        insights.append("🧬 This protein is hydrophobic - likely membrane-bound")
+        insights.append("🧬 **Hydrophobic protein** - likely membrane-bound or transmembrane")
+    if analysis['hydrophobic'] / total < 0.3:
+        insights.append("💧 **Hydrophilic protein** - likely soluble in aqueous environments")
     if analysis['charged'] / total > 0.3:
-        insights.append("⚡ High charge content - may interact with DNA/RNA")
+        insights.append("⚡ **High charge content** - may interact with DNA/RNA or other charged molecules")
     if analysis['polar'] / total > 0.4:
-        insights.append("💧 Polar-rich protein - likely soluble in water")
+        insights.append("🌊 **Polar-rich protein** - likely soluble and surface-exposed")
+    if analysis['aromatic'] / total > 0.1:
+        insights.append("🌟 **Contains aromatic residues** - important for protein-protein interactions")
     if analysis['unique_aa'] > 15:
-        insights.append("🌈 High amino acid diversity - complex protein structure")
+        insights.append("🌈 **High amino acid diversity** - suggests complex protein structure")
     if analysis['stop_codons'] > 0:
-        insights.append("⏹️ Contains stop codons - may be incomplete sequence")
+        insights.append("⏹️ **Contains stop codons** - sequence may be incomplete or have premature stops")
+    if len(amino_acids) < 50:
+        insights.append("📏 **Short peptide** - likely a signaling molecule or hormone")
+    if len(amino_acids) > 300:
+        insights.append("🏗️ **Large protein** - may have multiple domains or complex structure")
     
     analysis['insights'] = insights
     return analysis
@@ -157,24 +194,32 @@ st.markdown("""
 # Sidebar
 with st.sidebar:
     st.markdown("### 🔍 NCBI Accession Search")
+    st.caption("Try: NM_000518, P42212, NP_000509")
     accession_input = st.text_input(
         "Enter Accession Number",
-        placeholder="e.g., NM_000518, NP_000509, XM_005249",
-        help="NCBI accession numbers for DNA sequences"
+        placeholder="e.g., NM_000518, P42212",
+        help="NCBI nucleotide (NM_, XM_) or UniProt (P, Q, O) IDs"
     )
     
-    if st.button("🔍 Fetch from NCBI", use_container_width=True):
-        if accession_input:
-            with st.spinner("Fetching from NCBI..."):
-                sequence, description = fetch_from_ncbi(accession_input.strip())
-                if sequence:
-                    st.session_state.dna_input = sequence
-                    st.session_state.ncbi_description = description
-                    st.session_state.accession = accession_input
-                    st.success(f"✅ Fetched: {accession_input}")
-                    st.rerun()
-                else:
-                    st.error(f"❌ Error: {description}")
+    col1, col2 = st.columns(2)
+    with col1:
+        if st.button("🔍 Fetch", use_container_width=True):
+            if accession_input:
+                with st.spinner("Fetching from NCBI..."):
+                    sequence, description, seq_type = fetch_from_ncbi(accession_input.strip())
+                    if sequence:
+                        st.session_state.dna_input = sequence
+                        st.session_state.ncbi_description = description
+                        st.session_state.accession = accession_input
+                        st.session_state.seq_type = seq_type
+                        st.success(f"✅ Fetched: {accession_input} ({seq_type})")
+                        st.rerun()
+                    else:
+                        st.error(f"❌ Error: {description}")
+    with col2:
+        if st.button("🧬 Example", use_container_width=True):
+            st.session_state.dna_input = "ATGGCGTAA"
+            st.rerun()
     
     st.markdown("---")
     st.markdown("### 🧪 Quick Presets")
@@ -208,14 +253,17 @@ with col_left:
     # Show NCBI info if available
     if 'accession' in st.session_state:
         st.success(f"📌 Accession: {st.session_state.accession}")
+        if 'seq_type' in st.session_state:
+            st.caption(f"Type: {st.session_state.seq_type}")
         if 'ncbi_description' in st.session_state:
-            st.caption(st.session_state.ncbi_description[:100] + "...")
+            st.caption(st.session_state.ncbi_description[:100] + "..." if len(st.session_state.ncbi_description) > 100 else st.session_state.ncbi_description)
     
     dna_input = st.text_area(
-        "Enter DNA sequence",
+        "Enter DNA or Protein sequence",
         value=st.session_state.get('dna_input', 'ATGGCGTAA'),
         height=120,
-        key="dna_input"
+        key="dna_input",
+        help="Enter DNA sequence (ATCG) or protein sequence (amino acids)"
     )
     
     col_btn1, col_btn2, col_btn3 = st.columns([2, 1, 1])
@@ -228,27 +276,29 @@ with col_left:
                 del st.session_state.accession
                 del st.session_state.ncbi_description
             st.rerun()
-    with col_btn3:
-        if st.button("Example", use_container_width=True):
-            st.session_state.dna_input = "ATGGCGTAA"
-            st.rerun()
     
+    # Check if input is DNA or Protein
     if dna_input:
-        valid = bool(re.match(r'^[ATCGatcg\s]+$', dna_input))
-        if not valid:
-            st.error("⚠️ Invalid sequence! Only A, T, C, G allowed.")
-        elif len(dna_input.replace(' ', '')) < 3:
-            st.warning("⚠️ Sequence must be at least 3 bases long.")
-        else:
+        dna_clean = dna_input.replace(' ', '').upper()
+        is_dna = bool(re.match(r'^[ATCG]+$', dna_clean))
+        is_protein = bool(re.match(r'^[ARNDCEQGHILKMFPSTWYV]+$', dna_clean))
+        
+        if is_dna:
             st.success("✅ Valid DNA sequence")
+        elif is_protein:
+            st.info("🧬 Protein sequence detected - analyzing directly")
+        elif len(dna_input) > 0:
+            st.warning("⚠️ Contains invalid characters. Use A,T,C,G for DNA or amino acid letters.")
     
     if translate_clicked and dna_input:
-        clean_dna = re.sub(r"\s+", "", dna_input.upper())
-        if len(clean_dna) >= 3 and re.match(r'^[ATCG]+$', clean_dna):
-            codons, amino_acids = translate_dna(clean_dna)
-            
-            # AI Analysis
-            analysis = ai_analyze_protein(amino_acids)
+        clean_input = re.sub(r"\s+", "", dna_input.upper())
+        
+        # Check if input is DNA or Protein
+        is_dna_input = bool(re.match(r'^[ATCG]+$', clean_input))
+        is_protein_input = bool(re.match(r'^[ARNDCEQGHILKMFPSTWYV]+$', clean_input))
+        
+        if is_dna_input and len(clean_input) >= 3:
+            codons, amino_acids = translate_dna(clean_input)
             
             st.markdown("### 🔬 Translation Results")
             
@@ -257,13 +307,24 @@ with col_left:
             st.code(result, language="text")
             
             st.session_state.amino_acids = amino_acids
-            st.session_state.analysis = analysis
+            
+        elif is_protein_input:
+            amino_acids = list(clean_input)
+            st.markdown("### 🔬 Protein Sequence Analysis")
+            st.code(" → ".join(amino_acids), language="text")
+            st.session_state.amino_acids = amino_acids
+            
+        else:
+            st.error("⚠️ Invalid input. Enter DNA (ATCG) or protein sequence.")
 
 with col_right:
     st.markdown("### 🌈 3D Protein Structure")
     
     if 'amino_acids' in st.session_state and st.session_state.amino_acids:
         amino_acids = st.session_state.amino_acids
+        
+        # Run AI analysis
+        analysis = ai_analyze_protein(amino_acids)
         
         n = len(amino_acids)
         if n > 0:
@@ -323,11 +384,12 @@ with col_right:
             col3.metric("Stop Codons", amino_acids.count('*'))
             
             # AI Insights
-            if 'analysis' in st.session_state:
-                analysis = st.session_state.analysis
-                st.markdown("### 🤖 AI Insights")
-                for insight in analysis.get('insights', []):
+            st.markdown("### 🤖 AI Insights")
+            if analysis.get('insights'):
+                for insight in analysis['insights']:
                     st.markdown(f'<div class="insight-box">{insight}</div>', unsafe_allow_html=True)
+            else:
+                st.info("No specific insights generated for this sequence.")
             
             # Composition
             counts = Counter(amino_acids)
